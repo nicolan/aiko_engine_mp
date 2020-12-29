@@ -1,13 +1,15 @@
 # examples/cyoa.py
 #
-# Choose your own adventure.
+# Choose your own adventure game engine
 #
 # Story files in configuration/cyoa/*.py
 # Use the main cyoa config file to select which story to use.
 #
 # Usage
 # ~~~~~
-# # mpfs [/]> put examples/cyoa.py
+# # mpfs [/]> put examples/cyoa.py 
+# # mpfs [/]> put configuration/cyoa.py
+# # mpfs [/]> put examples/configuration/cyoa_your_story_file.py
 # mpfs [/]> repl
 # MicroPython v1.13 on 2020-09-02; ESP32 module with ESP32
 # Type "help()" for more information.
@@ -16,6 +18,7 @@
 # >>> run()
 #
 import uos
+import os
 import utime
 import aiko.event as event
 import aiko.oled as oled
@@ -27,6 +30,15 @@ import configuration.cyoa
 current_story_node = None
 game = None
 lock = None
+selected = None
+scrollerpos = 1
+
+buttonR = Pin(17, Pin.IN, Pin.PULL_UP)
+buttonL = Pin(16, Pin.IN, Pin.PULL_UP)
+downL = 12
+upL = 15
+downR = 14
+upR = 27
 
 def random(min, max, r_max=255):
     r = uos.urandom(1)[0] & r_max
@@ -45,12 +57,12 @@ def timer_handler():
         return
 
     # top left slider = restart
-    if common.touch_pins_check([15]):
+    if common.touch_pins_check([upL]):
         oled.oleds_clear(0)
         new_game()
         return
     # top right slider = abort
-    if common.touch_pins_check([27]):
+    if common.touch_pins_check([upR]):
         oled.oleds_clear(0)
         end_game()
         return
@@ -59,9 +71,9 @@ def timer_handler():
     
     pressed=None
     # bottom left slider is pin 12, bottom right slider is pin 14
-    if common.touch_pins_check([12]):
+    if common.touch_pins_check([downL]):
         pressed=0
-    if common.touch_pins_check([14]):
+    if common.touch_pins_check([downR]):
         pressed=1
     if pressed is None:
         lock=None
@@ -132,20 +144,99 @@ def render_node(node):
         oled.log(slider[i]+" "+choice[0])
         i = i+1
 
+def get_game_list():
+    gamelist = []
+    files = os.listdir("examples/configuration")
+    for f in files:
+        if f.lower().startswith("cyoa_"):
+            gamelist.append(f[:-3])
+    return gamelist
+
+# Display the items in a menu, highlighting the currently selected one      
+def draw_menu(items):
+    global scrollerpos
+    i = 1
+
+    oled.oleds_clear(oled.bg)
+    bg = oled.bg
+    fg = oled.fg
+    
+    oled.oleds_text("Choose your adventure:",0,10*i,fg)
+    for item in items:
+        if i==scrollerpos:
+            oled.oleds[0].fill_rect(0, 11*(i+1), 2*oled.font_size, oled.font_size, fg)
+            oled.oleds_text(" >",0,11*(i+1), bg)
+            oled.oleds_text(item, 2*oled.font_size, 11*(i+1), fg)
+        else:
+            for oleder in oled.oleds:
+                oleder.fill_rect(0, 11*(i+1), oleder.width-10, oled.font_size, bg)
+            oled.oleds_text("  "+item, 0, 11*(i+1), fg)
+        i=i+1
+    oled.oleds_text("Push screen to select",0,11*(i+1), fg)
+    oled.oleds_show()
+
+# Use the slider buttons to move up and down in the list
+# Use either screen button to confirm the choice
+# 12 and 14 is down, 15 and 27 is up
+# screen buttons are 16 and 17
+def menu_handler():
+    global selected, scrollerpos, menu
+    # If button is pushed
+    #    remove this handler
+    #    set menu selection global
+    #    reset selected to none
+    if not(buttonL.value()) or not(buttonR.value()):
+        selected = menu[scrollerpos-1]
+        scrollerpos = None
+        event.terminate()
+        return
+    # If up/down is pressed, move up/down (and wrap to start/end)
+    #    this means move the selected pointer (Global) up/down
+    #    and redraw menu
+    if common.touch_pins_check([downL]) or common.touch_pins_check([downR]):
+        scrollerpos = scrollerpos +1
+        if (scrollerpos > len(menu)):
+            scrollerpos = 1
+        draw_menu(menu)
+    if common.touch_pins_check([upL]) or common.touch_pins_check([upR]):
+        scrollerpos = scrollerpos-1
+        if (scrollerpos < 1):
+            scrollerpos = len(menu)
+        draw_menu(menu)
+    else:
+        # If nothing is pressed, do nothing
+        return
+    
 def run():
-    global game
+    global game, menu
     
     oled.title = "CYOA 0.0"
     oled.oleds_clear(0)
     
+    gamelist = get_game_list()
+    if gamelist == []:
+        print("No games found.")
+        oled.log("No games found.")
+        return
+        
+    menu = gamelist
+    draw_menu(gamelist)
+    event.add_timer_handler(menu_handler,500)
+    try:
+        event.loop()
+    finally:
+        event.remove_timer_handler(menu_handler)
+    
+    print("Selected: "+selected)    
     # Read config file, find story name (error)
-    storyname = "cyoa_"+configuration.cyoa.settings["story"]
+    # Trim the .py off the filename
+    storyname = selected
     print("CYOA game file: "+storyname)
     game = __import__("examples.configuration."+storyname, globals(), locals(), [storyname],0)
     # Load story config (error)
     new_game()
 
-    event.add_timer_handler(timer_handler,2000)
+    event.add_timer_handler(timer_handler,1000)
     try:
         event.loop()
     finally:
